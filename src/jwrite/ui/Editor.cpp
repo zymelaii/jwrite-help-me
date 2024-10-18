@@ -876,6 +876,10 @@ void Editor::drawCursor(QPainter *p) {
     jwrite_profiler_record(CursorRenderCost);
 }
 
+bool Editor::focusNextPrevChild(bool next) {
+    return false;
+}
+
 void Editor::resizeEvent(QResizeEvent *e) {
     QWidget::resizeEvent(e);
     update_text_view_margins();
@@ -994,6 +998,8 @@ void Editor::keyPressEvent(QKeyEvent *e) {
             insert(TextInputCommandManager::translate_printable_char(e), false);
         } break;
         case TextInputCommand::InsertTab: {
+            //! TODO: wake up ai continuation
+            qDebug() << "TODO: wake up ai continuation";
         } break;
         case TextInputCommand::InsertNewLine: {
             insert("\n", true);

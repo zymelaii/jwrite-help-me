@@ -176,6 +176,7 @@ protected:
     void drawHighlightBlock(QPainter *p);
     void drawCursor(QPainter *p);
 
+    bool     focusNextPrevChild(bool next) override;
     void     resizeEvent(QResizeEvent *e) override;
     void     paintEvent(QPaintEvent *e) override;
     void     focusInEvent(QFocusEvent *e) override;
