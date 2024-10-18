@@ -34,7 +34,7 @@ target_link_libraries(
 	PRIVATE minizip
 	PRIVATE widget-kit
 	PRIVATE jwrite-core
-	PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Concurrent
+	PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Concurrent
 	PRIVATE QWindowKit::Widgets
 )
 

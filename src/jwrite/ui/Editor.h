@@ -8,6 +8,7 @@
 #include <jwrite/AppConfig.h>
 #include <QTimer>
 #include <QWidget>
+#include <atomic>
 
 namespace jwrite::ui {
 
@@ -28,6 +29,7 @@ signals:
     void textChanged(const QString &text);
     void focusLost(VisualTextEditContext::TextLoc last_loc);
     void activated();
+    void on_read_ai_continuation_stream(const QString &text);
 
 public slots:
 
@@ -100,6 +102,9 @@ public:
     void                  scrollTo(double pos_y, bool smooth);
     void                  scrollToStart();
     void                  scrollToEnd();
+
+    void start_smart_continuation();
+    void stop_smart_continuation();
 
     /*!
      * \return expected horizontal margin hint in pixels
@@ -224,6 +229,8 @@ private:
     bool   auto_scroll_mode_;
     double scroll_base_y_pos_;
     double scroll_ref_y_pos_;
+
+    std::atomic_bool ai_continuation_active_;
 
     QFont           ui_content_font_;
     QMargins        ui_margins_;

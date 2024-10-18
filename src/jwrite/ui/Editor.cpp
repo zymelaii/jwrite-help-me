@@ -18,10 +18,149 @@
 #include <QTimer>
 #include <QMap>
 #include <QScreen>
+#include <QThread>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QMetaMethod>
 #include <magic_enum.hpp>
 #include <spdlog/spdlog.h>
 
 namespace jwrite::ui {
+
+static const QString PROMPT_FMTSTR(R"(
+现在你要作为一个经验丰富的网络小说作家，帮我续写下面这个网络小说，输出时输出你新创作的内容，不可输出之前小说之前的内容！！！
+续写指的是接着小说的末尾创作出新的内容，创作出的新内容与小说之前的内容不矛盾，输出时不用将小说之前内容输出！！！
+
+读者扮演的角色：
+上帝视角的观察者
+
+以下段落是你续写新的段落时要参考的前情提要，续写新的段落内容要和这些段落的内容相关
+%1
+
+当前小说内容（这部分内容禁止输出，你的任务是接着这部分小说内容续写）：
+<start>
+%2
+<end>
+
+你需要做的是：
+1. 续写小说内容，不超过200字；
+2. 要求文风和上文的当前小说保持一致，并且剧情要吸引人 ，不要重复之前小说的内容！小说要是第一人称的，注意小说中的人物关系和背景设定。请注意这只是一个长篇小说中的一章，剧情不要发展太快。除非听到明确的指令，禁止书写结局，故事应该停在具有悬念的地方，让读者好奇故事接下来的发展。到故事的主人公可以做出选择的地方停止；
+
+输出的格式为：
+
+<start>
+续写内容（不包含之前小说内容，不要超过200字！）
+<end>
+
+小说如果是第一人称，注意小说中的人物关系和背景设定。
+注意，续写内容不要超过200字！续写内容要接着之前小说的内容，但是一定不要重复！
+
+下面给出一些结尾的范例，你需要学习好的结尾，避免差的结尾
+好的结尾
+1 他突然兴奋地说道：“小赵，我发现了一些线索，这与你父亲的过去有关！”
+
+差的结尾（总结性文字）
+1 我立刻离开了车间，踏上了寻找答案的道路。
+2 我匆忙离开家，心中充满了对线索的渴望和对真相的追寻。
+3 我决定深入调查，找到这份文件，揭开背后的真相。
+
+注意续写的内容一定不要超过200字！一定要保证生成到<end>!!
+记住最重要的是续写内容不超过200字！记住续写内容的风格要和之前小说内容保持一致！语气和文字要符合网络小说的样子！不要太正经！不要简略！续写内容中只要出现一个情节就好，但是要详细展开这个情节的发生过程！至少要包含2个对话和2段细节描写！
+)");
+
+class ContinuationWorker : public QThread {
+public:
+    ContinuationWorker(Editor *host, const QString &preceding_text)
+        : host_(host)
+        , parts_(preceding_text.split('\n')) {
+        Q_ASSERT(parts_.isEmpty());
+    }
+
+    QJsonObject
+        request_post(const QString &api, std::optional<QJsonObject> opt_json = std::nullopt) {
+        auto mgr = new QNetworkAccessManager;
+
+        QNetworkRequest request(QString("http://127.0.0.1:8000%1").arg(api));
+
+        QByteArray req_data;
+        if (opt_json) {
+            request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            req_data = QJsonDocument(*opt_json).toJson();
+        }
+        auto reply = mgr->post(request, req_data);
+
+        QJsonDocument resp;
+
+        QEventLoop ev;
+        QObject::connect(reply, &QNetworkReply::finished, [=, &ev, &resp]() {
+            Q_ASSERT(reply->error() == QNetworkReply::NoError);
+            resp = QJsonDocument::fromJson(reply->readAll());
+            reply->deleteLater();
+            mgr->deleteLater();
+            ev.quit();
+        });
+        ev.exec();
+
+        return resp.object();
+    }
+
+    QString create_new_session() {
+        const auto  pred    = parts_.back();
+        const auto  context = parts_.mid(0, parts_.length() - 1).join('\n');
+        QJsonObject json;
+        json["text"] = PROMPT_FMTSTR.arg(context).arg(pred);
+        return request_post("/novel/new", json).value("token").toString();
+    }
+
+    void run() override {
+        auto       parts        = parts_;
+        const auto nearest_pred = parts.back();
+        parts.pop_back();
+        const auto context = parts.join('\n');
+
+        const auto token = create_new_session();
+        qDebug().noquote() << "new session:" << token;
+
+        QJsonObject json;
+        json["token"] = token;
+
+        QString prev_text = "\xff";
+        int     total_len = 0;
+
+        while (true) {
+            const auto resp  = request_post("/novel/read", json);
+            const int  index = resp["index"].toInt();
+            auto       text  = resp["text"].toString();
+            if (index == -1) { break; }
+            if (text.isEmpty()) { continue; }
+
+            bool done = false;
+            if (text.contains("<start>")) { text = text.split("<start>").back(); }
+            for (const auto end_tag : {"<end>", "</end>", "</start>"}) {
+                if (text.contains(end_tag)) {
+                    text = text.split(end_tag).front();
+                    done = true;
+                }
+            }
+
+            if (text == prev_text) { break; }
+            prev_text = text;
+
+            QMetaObject::invokeMethod(
+                host_, "on_read_ai_continuation_stream", Q_ARG(QString, text));
+            if (done) { break; }
+
+            total_len += text.length();
+            if (total_len >= 200) { break; }
+        }
+
+        qDebug().noquote() << "session" << token << "ended";
+    }
+
+private:
+    Editor     *host_;
+    QStringList parts_;
+};
 
 bool Editor::soft_center_mode_enabled() const {
     return soft_center_mode_;
@@ -214,6 +353,35 @@ void Editor::scrollToEnd() {
     const double line_spacing = context_->engine.line_spacing_ratio * context_->engine.line_height;
     const double y_pos        = max_y_pos + line_spacing - context_->viewport_height / 2;
     scrollTo(y_pos, false);
+}
+
+void Editor::start_smart_continuation() {
+    ai_continuation_active_ = true;
+
+    const auto &e = context_->engine;
+
+    const auto loc = currentTextLoc();
+    if (loc.block_index == -1) { return; }
+
+    QStringList lines;
+    for (int i = 0; i < loc.block_index; ++i) {
+        lines.append(e.active_blocks[i]->text().toString());
+    }
+    lines.append(e.current_block()->text().left(loc.pos).toString());
+
+    const auto text = lines.join('\n');
+    if (text.isEmpty()) { return; }
+
+    auto worker = new ContinuationWorker(this, text);
+    connect(worker, &QThread::finished, [this, worker] {
+        worker->deleteLater();
+        stop_smart_continuation();
+    });
+    worker->start();
+}
+
+void Editor::stop_smart_continuation() {
+    ai_continuation_active_ = false;
 }
 
 int Editor::smart_margin_hint() const {
@@ -570,6 +738,7 @@ void Editor::init() {
     auto_scroll_mode_          = false;
     ui_cursor_shape_[0]        = Qt::ArrowCursor;
     ui_cursor_shape_[1]        = Qt::ArrowCursor;
+    ai_continuation_active_    = false;
 
     set_soft_center_mode_enabled(true);
     set_elastic_resize_enabled(false);
@@ -598,6 +767,9 @@ void Editor::init() {
     connect(this, &Editor::on_text_area_change, this, [this](QRect area) {
         context_->resize_viewport(area.width(), area.height());
         requestUpdate(false);
+    });
+    connect(this, &Editor::on_read_ai_continuation_stream, this, [this](const QString &text) {
+        insert(text, true);
     });
     connect(&blink_timer_, &QTimer::timeout, this, &Editor::renderBlinkCursor);
     connect(&stable_timer_, &QTimer::timeout, this, &Editor::render);
@@ -967,6 +1139,8 @@ void Editor::focusOutEvent(QFocusEvent *e) {
 }
 
 void Editor::keyPressEvent(QKeyEvent *e) {
+    if (ai_continuation_active_) { return; }
+
     if (!context_->engine.is_cursor_available()) { return; }
 
     //! ATTENTION: normally this branch is unreachable, but when IME events are too frequent and
@@ -998,8 +1172,7 @@ void Editor::keyPressEvent(QKeyEvent *e) {
             insert(TextInputCommandManager::translate_printable_char(e), false);
         } break;
         case TextInputCommand::InsertTab: {
-            //! TODO: wake up ai continuation
-            qDebug() << "TODO: wake up ai continuation";
+            start_smart_continuation();
         } break;
         case TextInputCommand::InsertNewLine: {
             insert("\n", true);
